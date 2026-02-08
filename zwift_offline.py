@@ -3412,6 +3412,52 @@ def is_admin(user):
 def relay_worlds_attributes():
     player_update = udp_node_msgs_pb2.WorldAttribute()
     player_update.ParseFromString(request.stream.read())
+    
+        # ------------------------------------------------------------------
+    # Meetup / Event diagnostics logging
+    #
+    # Purpose:
+    #   Observe WorldAttribute packets sent by the Zwift client during
+    #   meetup completion (especially distance-based meetups).
+    #
+    #   We are looking for the exact wa_type that is emitted at the moment
+    #   when the in-game results table appears.
+    #
+    #   This is diagnostic-only code. It does NOT change behavior.
+    # ------------------------------------------------------------------
+
+    try:
+        # Raw protobuf size can help distinguish large result payloads
+        payload_size = len(player_update.payload)
+
+        # Default values (not all WA types include IDs)
+        rel_id = getattr(player_update, "rel_id", None)
+
+        logger.info(
+            "[WA] type=%s payload_size=%d rel_id=%s",
+            udp_node_msgs_pb2.WA_TYPE.Name(player_update.wa_type),
+            payload_size,
+            rel_id
+        )
+
+        # Extra verbose logging ONLY for suspected race-related packets
+        if player_update.wa_type in (
+            udp_node_msgs_pb2.WA_TYPE.WAT_EVENT_SUBGROUP_PLACEMENT,
+            udp_node_msgs_pb2.WA_TYPE.WAT_SR,  # segment result (control reference)
+        ):
+            logger.info(
+                "[WA-DETAIL] %s",
+                MessageToDict(
+                    player_update,
+                    preserving_proto_field_name=True
+                )
+            )
+
+    except Exception as e:
+        # Logging must never break relay flow
+        logger.warning("[WA-LOGGING-ERROR] %s", e)
+        #End of logging section
+        
     player_update.world_time_expire = world_time() + 60000
     player_update.wa_f12 = 1
     player_update.timestamp = int(time.time() * 1000000)
