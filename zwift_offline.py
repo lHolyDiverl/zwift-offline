@@ -642,6 +642,165 @@ class ActiveEventInstance:
         except Exception as e:
             logger.error(f"Error updating event status: {e}")
 
+# ============================================================================
+# EVENT SCHEDULING FUNCTIONS
+# These functions handle event activation timing
+# ============================================================================
+
+def schedule_event_activation(event_id):
+    """
+    Schedule an event to activate at its lineup time.
+    
+    Sets a timer to call activate_event() when lineup should start.
+    
+    Args:
+        event_id (int): Event to schedule
+    """
+    if event_id not in scheduled_events:
+        logger.warning(f"Cannot schedule non-existent event {event_id}")
+        return
+    
+    event = scheduled_events[event_id]
+    
+    # Calculate time until lineup starts (5 minutes before race)
+    lineup_time = event.lineup_start / 1000  # Convert ms to seconds
+    time_until_lineup = lineup_time - time.time()
+    
+    if time_until_lineup <= 0:
+        # Lineup should start now (or already started)
+        logger.info(f"Event {event_id} lineup time has passed, activating immediately")
+        activate_event(event_id)
+    else:
+        # Schedule activation for lineup time
+        timer = threading.Timer(time_until_lineup, activate_event, args=[event_id])
+        timer.daemon = True
+        timer.start()
+        
+        minutes = time_until_lineup / 60
+        logger.info(f"Event {event_id} '{event.name}' scheduled to activate in "
+                   f"{minutes:.1f} minutes (lineup at {datetime.datetime.fromtimestamp(lineup_time)})")
+
+
+def activate_event(event_id):
+    """
+    Activate an event - move from scheduled to active.
+    
+    Called when lineup time arrives.
+    Creates ActiveEventInstance for each category with registrations.
+    
+    Args:
+        event_id (int): Event to activate
+    """
+    if event_id not in scheduled_events:
+        logger.warning(f"Attempted to activate non-existent event {event_id}")
+        return
+    
+    event = scheduled_events[event_id]
+    
+    logger.info(f"Activating event {event_id}: {event.name}")
+    
+    # Create active instances for each category with registrations
+    activated_any = False
+    
+    for category in event.categories:
+        category_id = category['id']
+        
+        # Count registrations for this category
+        registered_in_cat = sum(
+            1 for cat_id in event.registered_players.values() 
+            if cat_id == category_id
+        )
+        
+        if registered_in_cat == 0:
+            logger.info(f"Skipping category {category['label']} - no registrations")
+            continue
+        
+        # Create active instance
+        instance = ActiveEventInstance(event, category)
+        active_event_instances[category_id] = instance
+        
+        # Add registered players to instance
+        for player_id, cat_id in event.registered_players.items():
+            if cat_id == category_id:
+                try:
+                    profile = get_partial_profile(player_id)
+                    instance.add_participant(player_id, profile)
+                except Exception as e:
+                    logger.error(f"Error adding player {player_id} to event: {e}")
+        
+        logger.info(f"Activated category {category['label']} (ID: {category_id}) "
+                   f"with {len(instance.participants)} participants")
+        activated_any = True
+    
+    if not activated_any:
+        logger.warning(f"Event {event_id} activated but no categories have registrations")
+    
+    # Update database status
+    try:
+        db_event = ScheduledEventDB.query.filter_by(event_id=event_id).first()
+        if db_event:
+            db_event.status = 'ACTIVE'
+            db.session.commit()
+    except Exception as e:
+        logger.error(f"Error updating event status: {e}")
+    
+    # Schedule race start countdown
+    time_until_start = (event.scheduled_start / 1000) - time.time()
+    
+    if time_until_start <= 0:
+        # Start immediately
+        logger.info(f"Event {event_id} scheduled start has passed, starting countdown now")
+        start_all_event_countdowns(event_id)
+    else:
+        # Schedule countdown to start at scheduled_start time
+        timer = threading.Timer(
+            time_until_start,
+            start_all_event_countdowns,
+            args=[event_id]
+        )
+        timer.daemon = True
+        timer.start()
+        
+        minutes = time_until_start / 60
+        logger.info(f"Event {event_id} countdown scheduled in {minutes:.1f} minutes")
+
+
+def start_all_event_countdowns(event_id):
+    """
+    Start countdown for all categories of an event.
+    
+    Called at the event's scheduled_start time.
+    
+    Args:
+        event_id (int): Event whose countdowns should start
+    """
+    if event_id not in scheduled_events:
+        logger.warning(f"Cannot start countdown for non-existent event {event_id}")
+        return
+    
+    event = scheduled_events[event_id]
+    
+    logger.info(f"Starting countdowns for all categories of event {event_id}")
+    
+    countdown_started = False
+    
+    for category in event.categories:
+        category_id = category['id']
+        
+        if category_id in active_event_instances:
+            instance = active_event_instances[category_id]
+            
+            if instance.state == 'WAITING':
+                instance.start_countdown()
+                countdown_started = True
+                logger.info(f"Started countdown for category {category['label']}")
+            else:
+                logger.warning(f"Category {category['label']} not in WAITING state, "
+                             f"current state: {instance.state}")
+    
+    if not countdown_started:
+        logger.warning(f"No countdowns started for event {event_id}")
+
 class EventRegistrationDB(db.Model):
     """
     Database model for event registrations.
