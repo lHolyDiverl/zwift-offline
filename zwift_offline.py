@@ -166,6 +166,31 @@ restarting_in_minutes = 0
 reload_pacer_bots = False
 auto_group = {'id': None, 'road_id': None, 'is_forward': None, 'all': False, 'thread': None}
 
+# ============================================================================
+# EVENT MANAGEMENT GLOBALS
+# In-memory storage for active event state
+# ============================================================================
+
+# Scheduled events that haven't started yet
+# Key: event_id (int) -> Value: ScheduledEvent object
+scheduled_events = {}
+
+# Currently active event instances (during lineup, countdown, or racing)
+# Key: event_subgroup_id (int) -> Value: ActiveEventInstance object
+active_event_instances = {}
+
+# Quick lookup: which event is each player currently registered for?
+# Key: player_id (int) -> Value: event_subgroup_id (int)
+event_registrations = {}
+
+# Archive of completed events
+# Key: event_id (int) -> Value: dict with event data and results
+completed_events = {}
+
+# Counter for generating unique event IDs
+# Start at 1000000 to avoid conflicts with other IDs
+event_id_counter = 1000000
+
 with open(os.path.join(SCRIPT_DIR, "data", "climbs.txt")) as f:
     CLIMBS = json.load(f)
 
