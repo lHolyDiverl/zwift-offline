@@ -4614,6 +4614,15 @@ def run_standalone(passed_online, passed_global_relay, passed_global_pace_partne
     def load_user(uid):
         return db.session.get(User, int(uid))
 
+    # ========================================================================
+    # Create events tables (if they don't exist)
+    # This is separate from database versioning system
+    # ========================================================================
+    create_events_tables()
+    
+    # Load scheduled events from database
+    load_scheduled_events_from_db()
+
     send_message_thread = threading.Thread(target=send_server_back_online_message)
     send_message_thread.start()
     remove_inactive_thread = threading.Thread(target=remove_inactive)
