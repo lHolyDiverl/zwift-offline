@@ -525,6 +525,32 @@ class ActiveEventInstance:
         logger.debug(f"Event {self.event_subgroup_id}: {len(standings)} riders, "
                     f"{len(self.finish_order)} finished")
     
+    def process_event_finish_check(player_id, state):
+        """
+        Check if player has finished their event.
+    
+        Called on every player state update.
+    
+        Args:
+            player_id (int): Player ID
+            state: PlayerState protobuf object
+        """
+        # Check if player is in an event
+        if player_id not in event_registrations:
+            return  # Not in any event
+    
+        category_id = event_registrations[player_id]
+    
+        # Check if event is active
+        if category_id not in active_event_instances:
+            return  # Event not active yet
+    
+        instance = active_event_instances[category_id]
+    
+    # Check finish line
+    if instance.state == 'RACING':
+        instance.check_finish_line(player_id, state)
+    
     def check_finish_line(self, player_id, player_state):
         """
         Check if a player has crossed the finish line.
