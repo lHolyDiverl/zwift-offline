@@ -4510,6 +4510,41 @@ def start_zwift():
         climb_override[request.remote_addr] = selected_climb
     return redirect("/ride", 302)
 
+# ============================================================================
+# CREATE EVENTS TABLES (Without Migration)
+# This function safely creates events tables if they don't exist
+# ============================================================================
+
+def create_events_tables():
+    """
+    Create events tables if they don't exist.
+    
+    This function safely creates the three events tables without
+    requiring a database version migration.
+    
+    Uses SQLAlchemy's db.create_all() which:
+    - Only creates tables that don't exist
+    - Doesn't modify existing tables
+    - Safe to run multiple times
+    
+    Returns:
+        bool: True if successful
+    """
+    try:
+        # Import the models (they're already defined above)
+        # SQLAlchemy will inspect the models and create missing tables
+        with app.app_context():
+            # This only creates tables that don't exist
+            # It will NOT modify existing tables or change DATABASE_CUR_VER
+            db.create_all()
+            
+        logger.info("Events tables verified/created successfully")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error creating events tables: {e}")
+        return False
+
 
 def run_standalone(passed_online, passed_global_relay, passed_global_pace_partners, passed_global_bots, passed_global_ghosts, passed_regroup_ghosts, passed_discord):
     global online
