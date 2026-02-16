@@ -4570,6 +4570,61 @@ def create_events_tables():
         logger.error(f"Error creating events tables: {e}")
         return False
 
+def load_scheduled_events_from_db():
+    """
+    Load scheduled events from database into memory on server start.
+    
+    This restores events that were created before a server restart.
+    Only loads events with status='SCHEDULED'.
+    """
+    try:
+        with app.app_context():
+            # Query for scheduled events that haven't started
+            db_events = ScheduledEventDB.query.filter_by(status='SCHEDULED').all()
+            
+            logger.info(f"Loading {len(db_events)} scheduled events from database")
+            
+            for db_event in db_events:
+                # Convert database model to event data dict
+                event_data = {
+                    'event_id': db_event.event_id,
+                    'name': db_event.name,
+                    'description': db_event.description,
+                    'event_type': db_event.event_type,
+                    'world_id': db_event.world_id,
+                    'route_id': db_event.route_id,
+                    'distance_meters': db_event.distance_meters,
+                    'laps': db_event.laps,
+                    'scheduled_start': db_event.scheduled_start,
+                    'admin_id': db_event.created_by
+                }
+                
+                # Create ScheduledEvent object (class defined in next phase)
+                # This will be added in Phase 2
+                # event = ScheduledEvent(event_data)
+                # scheduled_events[db_event.event_id] = event
+                
+                # Load registrations for this event
+                registrations = EventRegistrationDB.query.filter_by(
+                    event_id=db_event.event_id
+                ).all()
+                
+                # for reg in registrations:
+                #     event.registered_players[reg.player_id] = reg.event_subgroup_id
+                #     event_registrations[reg.player_id] = reg.event_subgroup_id
+                
+                logger.info(f"Loaded event {db_event.event_id}: {db_event.name} "
+                           f"with {len(registrations)} registrations")
+            
+            # Update global event ID counter
+            if db_events:
+                max_event_id = max(e.event_id for e in db_events)
+                global event_id_counter
+                event_id_counter = max(event_id_counter, max_event_id + 100)
+                
+    except Exception as e:
+        logger.error(f"Error loading scheduled events: {e}")
+
 
 def run_standalone(passed_online, passed_global_relay, passed_global_pace_partners, passed_global_bots, passed_global_ghosts, passed_regroup_ghosts, passed_discord):
     global online
