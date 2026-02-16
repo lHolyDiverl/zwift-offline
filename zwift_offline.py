@@ -203,6 +203,91 @@ class User(UserMixin, db.Model):
             return db.session.get(User, id)
         return None
 
+# ============================================================================
+# EVENT DATABASE MODELS
+# Added for real events functionality
+# These tables are created separately from database versioning
+# ============================================================================
+
+class ScheduledEventDB(db.Model):
+    """
+    Database model for admin-created scheduled events.
+    
+    Stores events that have been manually scheduled by admins.
+    Each event has one or more categories (A for men, E for women).
+    """
+    __tablename__ = 'scheduled_events'
+    
+    # Primary key
+    event_id = db.Column(db.Integer, primary_key=True)
+    
+    # Event details
+    name = db.Column(db.Text, nullable=False)  # e.g., "Saturday Morning Race"
+    description = db.Column(db.Text)  # Optional description
+    event_type = db.Column(db.Text, nullable=False)  # 'RACE' or 'TIME_TRIAL'
+    
+    # Location & route
+    world_id = db.Column(db.Integer, nullable=False)  # Course ID (6=Watopia, etc.)
+    route_id = db.Column(db.Integer, nullable=False)  # Route hash from events.txt
+    
+    # Race parameters (one of these must be set)
+    distance_meters = db.Column(db.Integer)  # Total race distance
+    laps = db.Column(db.Integer)  # Or number of laps
+    
+    # Timing
+    scheduled_start = db.Column(db.BigInteger, nullable=False)  # Unix timestamp (ms)
+    
+    # Metadata
+    created_by = db.Column(db.Integer, nullable=False)  # Admin player_id
+    created_at = db.Column(db.BigInteger, nullable=False)  # Creation timestamp (ms)
+    status = db.Column(db.Text, default='SCHEDULED')  # SCHEDULED, ACTIVE, COMPLETED, CANCELLED
+    
+    def __repr__(self):
+        return f'<ScheduledEvent {self.event_id}: {self.name}>'
+
+
+class EventRegistrationDB(db.Model):
+    """
+    Database model for event registrations.
+    
+    Tracks which players have signed up for which event categories.
+    One row per player per event registration.
+    """
+    __tablename__ = 'event_registrations'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    event_id = db.Column(db.Integer, nullable=False)  # Links to ScheduledEventDB
+    event_subgroup_id = db.Column(db.Integer, nullable=False)  # Category ID
+    player_id = db.Column(db.Integer, nullable=False)  # Player who registered
+    registered_at = db.Column(db.BigInteger, nullable=False)  # Registration time (ms)
+    
+    def __repr__(self):
+        return f'<EventReg player={self.player_id} event={self.event_id} cat={self.event_subgroup_id}>'
+
+
+class CompletedEventResultDB(db.Model):
+    """
+    Database model for completed event results.
+    
+    Stores final race results for each participant.
+    Provides persistent storage for historical results.
+    """
+    __tablename__ = 'completed_event_results'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    event_id = db.Column(db.Integer, nullable=False)  # Original event ID
+    event_subgroup_id = db.Column(db.Integer, nullable=False)  # Category ID
+    player_id = db.Column(db.Integer, nullable=False)  # Player ID
+    position = db.Column(db.Integer)  # Final finishing position
+    finish_time_ms = db.Column(db.BigInteger)  # Finish timestamp (Unix ms)
+    elapsed_time_ms = db.Column(db.BigInteger)  # Race duration (ms)
+    distance_meters = db.Column(db.Integer)  # Distance covered
+    dnf = db.Column(db.Boolean, default=False)  # Did Not Finish flag
+    result_data = db.Column(db.Text)  # JSON with full result details
+    
+    def __repr__(self):
+        return f'<EventResult event={self.event_id} player={self.player_id} pos={self.position}>'
+
 class AnonUser(User, AnonymousUserMixin, db.Model):
     username = "zoffline"
     first_name = "z"
@@ -3412,52 +3497,6 @@ def is_admin(user):
 def relay_worlds_attributes():
     player_update = udp_node_msgs_pb2.WorldAttribute()
     player_update.ParseFromString(request.stream.read())
-    
-        # ------------------------------------------------------------------
-    # Meetup / Event diagnostics logging
-    #
-    # Purpose:
-    #   Observe WorldAttribute packets sent by the Zwift client during
-    #   meetup completion (especially distance-based meetups).
-    #
-    #   We are looking for the exact wa_type that is emitted at the moment
-    #   when the in-game results table appears.
-    #
-    #   This is diagnostic-only code. It does NOT change behavior.
-    # ------------------------------------------------------------------
-
-    try:
-        # Raw protobuf size can help distinguish large result payloads
-        payload_size = len(player_update.payload)
-
-        # Default values (not all WA types include IDs)
-        rel_id = getattr(player_update, "rel_id", None)
-
-        logger.info(
-            "[WA] type=%s payload_size=%d rel_id=%s",
-            udp_node_msgs_pb2.WA_TYPE.Name(player_update.wa_type),
-            payload_size,
-            rel_id
-        )
-
-        # Extra verbose logging ONLY for suspected race-related packets
-        if player_update.wa_type in (
-            udp_node_msgs_pb2.WA_TYPE.WAT_EVENT_SUBGROUP_PLACEMENT,
-            udp_node_msgs_pb2.WA_TYPE.WAT_SR,  # segment result (control reference)
-        ):
-            logger.info(
-                "[WA-DETAIL] %s",
-                MessageToDict(
-                    player_update,
-                    preserving_proto_field_name=True
-                )
-            )
-
-    except Exception as e:
-        # Logging must never break relay flow
-        logger.warning("[WA-LOGGING-ERROR] %s", e)
-        #End of logging section
-        
     player_update.world_time_expire = world_time() + 60000
     player_update.wa_f12 = 1
     player_update.timestamp = int(time.time() * 1000000)
