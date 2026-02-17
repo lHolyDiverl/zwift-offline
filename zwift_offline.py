@@ -328,8 +328,8 @@ class ActiveEventInstance:
         Add a player to this event instance.
         
         Args:
-            player_id (int): Player's ID
-            player_profile: Player's profile object
+            player_id (int): Player ID
+            player_profile: Player profile object (PartialProfile or full profile)
         """
         self.participants[player_id] = {
             'player_id': player_id,
@@ -344,8 +344,11 @@ class ActiveEventInstance:
                 'first_name': player_profile.first_name,
                 'last_name': player_profile.last_name,
                 'weight_grams': player_profile.weight_in_grams,
-                'ftp': player_profile.ftp,
-                'is_male': player_profile.is_male
+                # Use getattr() with default for optional fields
+                'ftp': getattr(player_profile, 'ftp', 0),
+                # PartialProfile uses 'male', full profile uses 'is_male'
+                'is_male': getattr(player_profile, 'is_male', 
+                                  getattr(player_profile, 'male', True))
             }
         }
         
@@ -959,12 +962,16 @@ class ScheduledEvent:
         Determine which category a player should be assigned to.
         
         Args:
-            player_profile: Player profile object with is_male attribute
+            player_profile: Player profile object (PartialProfile or full profile)
             
         Returns:
             int: Category ID (event_id + 1 for men, event_id + 5 for women)
         """
-        if player_profile.is_male:
+        # PartialProfile uses 'male', full profile uses 'is_male'
+        is_male = getattr(player_profile, 'is_male', 
+                         getattr(player_profile, 'male', True))
+        
+        if is_male:
             return self.categories[0]['id']  # Category A (Men)
         else:
             return self.categories[1]['id']  # Category E (Women)
