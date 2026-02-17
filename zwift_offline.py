@@ -867,6 +867,459 @@ class CompletedEventResultDB(db.Model):
     
     def __repr__(self):
         return f'<EventResult event={self.event_id} player={self.player_id} pos={self.position}>'
+        
+# ============================================================================
+# EVENT MANAGEMENT CLASSES (In-Memory Python Objects)
+# These are NOT database models - they manage active event state
+# ============================================================================
+
+class ScheduledEvent:
+    """
+    In-memory representation of a scheduled event.
+    
+    This is different from ScheduledEventDB (which is the database model).
+    ScheduledEvent manages the event logic and state.
+    """
+    
+    def __init__(self, event_data):
+        """
+        Initialize a scheduled event from event_data dictionary.
+        
+        Args:
+            event_data (dict): Event configuration with keys:
+                - event_id, name, description, event_type
+                - world_id, route_id, distance_meters, laps
+                - scheduled_start, admin_id
+        """
+        self.event_id = event_data['event_id']
+        self.name = event_data['name']
+        self.description = event_data.get('description', '')
+        self.event_type = event_data['event_type']  # 'RACE' or 'TIME_TRIAL'
+        self.world_id = event_data['world_id']
+        self.route_id = event_data['route_id']
+        self.distance_meters = event_data.get('distance_meters', 0)
+        self.laps = event_data.get('laps', 0)
+        self.scheduled_start = event_data['scheduled_start']  # Unix timestamp ms
+        self.created_by = event_data['admin_id']
+        self.created_at = time.time() * 1000
+        
+        # Calculate timing windows
+        # Registration opens 30 minutes before start
+        self.registration_start = self.scheduled_start - (30 * 60 * 1000)
+        # Lineup opens 5 minutes before start
+        self.lineup_start = self.scheduled_start - (5 * 60 * 1000)
+        
+        # Create categories (A for men, E for women)
+        self.categories = self._create_categories()
+        
+        # Track registrations: player_id -> category_id
+        self.registered_players = {}
+        
+        logger.info(f"Created ScheduledEvent {self.event_id}: {self.name}")
+    
+    def _create_categories(self):
+        """
+        Create event categories (A for men, E for women).
+        
+        Returns:
+            list: List of category dictionaries
+        """
+        categories = []
+        
+        # Category A - Men (ID = event_id + 1)
+        cat_a = {
+            'id': self.event_id + 1,
+            'label': 'A',
+            'label_num': 1,
+            'name': 'Category A',
+            'description': 'Men',
+            'event_category': 1,
+            'registered_count': 0,
+            'participants': {}
+        }
+        categories.append(cat_a)
+        
+        # Category E - Women (ID = event_id + 5)
+        cat_e = {
+            'id': self.event_id + 5,
+            'label': 'E',
+            'label_num': 5,
+            'name': 'Category E',
+            'description': 'Women',
+            'event_category': 0,
+            'registered_count': 0,
+            'participants': {}
+        }
+        categories.append(cat_e)
+        
+        return categories
+    
+    def get_category_for_player(self, player_profile):
+        """
+        Determine which category a player should be assigned to.
+        
+        Args:
+            player_profile: Player profile object with is_male attribute
+            
+        Returns:
+            int: Category ID (event_id + 1 for men, event_id + 5 for women)
+        """
+        if player_profile.is_male:
+            return self.categories[0]['id']  # Category A (Men)
+        else:
+            return self.categories[1]['id']  # Category E (Women)
+    
+    def can_register(self):
+        """
+        Check if registration is currently open.
+        
+        Returns:
+            bool: True if registration is open
+        """
+        current_time = time.time() * 1000
+        return (current_time >= self.registration_start and 
+                current_time < self.scheduled_start)
+    
+    def get_state(self):
+        """
+        Determine current event state based on timing.
+        
+        Returns:
+            str: Event state - PENDING, REGISTRATION, LINEUP, or SHOULD_START
+        """
+        current_time = time.time() * 1000
+        
+        if current_time < self.registration_start:
+            return 'PENDING'
+        elif current_time < self.lineup_start:
+            return 'REGISTRATION'
+        elif current_time < self.scheduled_start:
+            return 'LINEUP'
+        else:
+            return 'SHOULD_START'
+    
+    def to_dict(self):
+        """
+        Convert event to dictionary for JSON serialization.
+        
+        Returns:
+            dict: Event data suitable for API responses
+        """
+        return {
+            'event_id': self.event_id,
+            'name': self.name,
+            'description': self.description,
+            'event_type': self.event_type,
+            'world_id': self.world_id,
+            'route_id': self.route_id,
+            'distance_meters': self.distance_meters,
+            'laps': self.laps,
+            'scheduled_start': self.scheduled_start,
+            'registration_start': self.registration_start,
+            'lineup_start': self.lineup_start,
+            'created_by': self.created_by,
+            'categories': self.categories,
+            'state': self.get_state(),
+            'total_registered': len(self.registered_players)
+        }
+
+
+class ActiveEventInstance:
+    """
+    Manages an active event instance from lineup through finish.
+    
+    State machine: WAITING -> COUNTDOWN -> RACING -> FINISHED
+    One instance per category (A, E, etc.)
+    """
+    
+    def __init__(self, scheduled_event, category):
+        """
+        Initialize active event instance for a specific category.
+        
+        Args:
+            scheduled_event (ScheduledEvent): The parent event
+            category (dict): Category data (id, label, name, etc.)
+        """
+        self.event_subgroup_id = category['id']
+        self.event_id = scheduled_event.event_id
+        self.scheduled_event = scheduled_event
+        self.category = category
+        
+        # Timing
+        self.scheduled_start = scheduled_event.scheduled_start
+        self.actual_start_time = None
+        self.countdown_start_time = None
+        
+        # State: WAITING -> COUNTDOWN -> RACING -> FINISHED
+        self.state = 'WAITING'
+        
+        # Participants: player_id -> participant_data dict
+        self.participants = {}
+        
+        # Race tracking
+        self.race_start_distance = {}
+        self.finish_times = {}
+        self.finish_order = []
+        
+        # Background threads
+        self.countdown_thread = None
+        self.position_update_thread = None
+        
+        logger.info(f"Created ActiveEventInstance for event {self.event_id}, "
+                   f"category {category['label']} (ID: {self.event_subgroup_id})")
+    
+    def add_participant(self, player_id, player_profile):
+        """
+        Add a player to this event instance.
+        
+        Args:
+            player_id (int): Player ID
+            player_profile: Player profile object
+        """
+        self.participants[player_id] = {
+            'player_id': player_id,
+            'join_time': time.time(),
+            'ready': False,
+            'start_time': None,
+            'finish_time': None,
+            'distance_at_start': 0,
+            'position': 0,
+            'dnf': False,
+            'profile_snapshot': {
+                'first_name': player_profile.first_name,
+                'last_name': player_profile.last_name,
+                'weight_grams': player_profile.weight_in_grams,
+                'ftp': player_profile.ftp,
+                'is_male': player_profile.is_male
+            }
+        }
+        
+        # Set player's groupId for visual isolation
+        if player_id in online:
+            online[player_id].groupId = self.event_subgroup_id
+            logger.debug(f"Set player {player_id} groupId to {self.event_subgroup_id}")
+    
+    def remove_participant(self, player_id):
+        """
+        Remove a player from the event.
+        
+        Args:
+            player_id (int): Player ID
+        """
+        if player_id in self.participants:
+            del self.participants[player_id]
+        
+        if player_id in online:
+            online[player_id].groupId = 0
+    
+    def start_countdown(self):
+        """Begin 10-second countdown to race start."""
+        self.state = 'COUNTDOWN'
+        self.countdown_start_time = time.time()
+        
+        logger.info(f"Starting countdown for event {self.event_subgroup_id}")
+        
+        def countdown_worker():
+            """Background thread that runs the countdown."""
+            try:
+                for i in range(10, 0, -1):
+                    # Send countdown message to players
+                    for player_id in self.participants:
+                        logger.debug(f"Countdown {i} for player {player_id}")
+                    time.sleep(1)
+                
+                # START!
+                self.start_race()
+                
+            except Exception as e:
+                logger.error(f"Error in countdown thread: {e}")
+        
+        self.countdown_thread = threading.Thread(target=countdown_worker)
+        self.countdown_thread.daemon = True
+        self.countdown_thread.start()
+    
+    def start_race(self):
+        """Execute race start after countdown."""
+        self.state = 'RACING'
+        self.actual_start_time = time.time()
+        
+        logger.info(f"Event {self.event_subgroup_id} RACE START with "
+                   f"{len(self.participants)} participants")
+        
+        # Record start data for each participant
+        for player_id, participant in self.participants.items():
+            participant['start_time'] = self.actual_start_time
+            
+            if player_id in online:
+                state = online[player_id]
+                participant['distance_at_start'] = state.distance
+                self.race_start_distance[player_id] = state.distance
+                state.time = 0  # Reset race timer
+                
+                logger.debug(f"Player {player_id} start distance: {state.distance}m")
+        
+        # Start position tracking
+        self.start_position_tracking()
+    
+    def start_position_tracking(self):
+        """Start background thread to update race positions."""
+        def position_tracker():
+            """Background thread that updates positions every second."""
+            try:
+                while self.state == 'RACING':
+                    self.update_race_positions()
+                    time.sleep(1)
+            except Exception as e:
+                logger.error(f"Error in position tracking: {e}")
+        
+        self.position_update_thread = threading.Thread(target=position_tracker)
+        self.position_update_thread.daemon = True
+        self.position_update_thread.start()
+        
+        logger.info(f"Started position tracking for event {self.event_subgroup_id}")
+    
+    def update_race_positions(self):
+        """Calculate and update current race positions."""
+        if self.state != 'RACING':
+            return
+        
+        standings = []
+        
+        # Add racing riders
+        for player_id, participant in self.participants.items():
+            if participant['finish_time'] or participant['dnf']:
+                continue
+                
+            if player_id not in online:
+                continue
+            
+            state = online[player_id]
+            race_distance = state.distance - self.race_start_distance.get(player_id, 0)
+            
+            standings.append({
+                'player_id': player_id,
+                'distance': race_distance,
+                'finished': False
+            })
+        
+        # Add finished riders at the front
+        for i, player_id in enumerate(self.finish_order):
+            standings.insert(i, {
+                'player_id': player_id,
+                'distance': self.scheduled_event.distance_meters,
+                'finished': True
+            })
+        
+        # Update positions
+        for i, standing in enumerate(standings):
+            player_id = standing['player_id']
+            self.participants[player_id]['position'] = i + 1
+        
+        logger.debug(f"Event {self.event_subgroup_id}: {len(standings)} riders, "
+                    f"{len(self.finish_order)} finished")
+    
+    def check_finish_line(self, player_id, player_state):
+        """
+        Check if a player has crossed the finish line.
+        
+        Args:
+            player_id (int): Player to check
+            player_state: PlayerState protobuf object
+            
+        Returns:
+            bool: True if player finished this update
+        """
+        if self.state != 'RACING':
+            return False
+            
+        if player_id not in self.participants:
+            return False
+            
+        participant = self.participants[player_id]
+        if participant['finish_time'] or participant['dnf']:
+            return False
+        
+        # Calculate race distance (distance since race start)
+        race_distance = player_state.distance - self.race_start_distance.get(player_id, 0)
+        target_distance = self.scheduled_event.distance_meters
+        
+        # Check if finished
+        if self.scheduled_event.laps > 0:
+            # Lap-based race
+            if player_state.laps >= self.scheduled_event.laps:
+                return self.record_finish(player_id)
+        elif target_distance > 0:
+            # Distance-based race
+            if race_distance >= target_distance:
+                return self.record_finish(player_id)
+        
+        return False
+    
+    def record_finish(self, player_id):
+        """
+        Record a player finishing the race.
+        
+        Args:
+            player_id (int): Player who finished
+            
+        Returns:
+            bool: True
+        """
+        finish_time = time.time()
+        participant = self.participants[player_id]
+        
+        participant['finish_time'] = finish_time
+        elapsed = finish_time - participant['start_time']
+        
+        self.finish_order.append(player_id)
+        position = len(self.finish_order)
+        participant['position'] = position
+        
+        logger.info(f"Player {player_id} finished in position {position}, "
+                   f"time: {elapsed:.2f}s ({elapsed/60:.2f} min)")
+        
+        # Check if all finished
+        finished_count = len(self.finish_order)
+        dnf_count = sum(1 for p in self.participants.values() if p['dnf'])
+        total_should_finish = len(self.participants) - dnf_count
+        
+        if finished_count >= total_should_finish:
+            self.finish_event()
+        
+        return True
+    
+    def finish_event(self):
+        """Mark event as completed and archive results."""
+        self.state = 'FINISHED'
+        logger.info(f"Event {self.event_subgroup_id} completed with "
+                   f"{len(self.finish_order)} finishers")
+        
+        # Archive results
+        if self.event_id not in completed_events:
+            completed_events[self.event_id] = {
+                'event_data': self.scheduled_event,
+                'categories': {},
+                'completed_at': time.time()
+            }
+        
+        from copy import deepcopy
+        completed_events[self.event_id]['categories'][self.event_subgroup_id] = {
+            'results': self.finish_order.copy(),
+            'participants': deepcopy(self.participants),
+            'actual_start': self.actual_start_time
+        }
+        
+        # Update database status
+        try:
+            with app.app_context():
+                db_event = ScheduledEventDB.query.filter_by(
+                    event_id=self.event_id
+                ).first()
+                if db_event:
+                    db_event.status = 'COMPLETED'
+                    db.session.commit()
+        except Exception as e:
+            logger.error(f"Error updating event status: {e}")
 
 class AnonUser(User, AnonymousUserMixin, db.Model):
     username = "zoffline"
