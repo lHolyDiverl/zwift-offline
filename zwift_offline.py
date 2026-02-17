@@ -2768,16 +2768,7 @@ def api_events_search():
         
         logger.info(f"Events search: returning {len(events_list)} events")
         
-        #return jsonify(events_list), 200
-        return jsonify({
-            'id': event.event_id,
-            'name': event.name,
-            'eventStart': event.scheduled_start,
-            'eventSubgroups': [...],  # ← Zwift needs this structure
-            'mapId': event.world_id,
-            'routeId': event.route_id,
-            # ... proper Zwift fields
-})
+        return jsonify(events_list), 200
         
     except Exception as e:
         logger.error(f"Error in events search: {e}")
