@@ -636,12 +636,13 @@ class ActiveEventInstance:
         
         # Update database status
         try:
-            db_event = ScheduledEventDB.query.filter_by(
-                event_id=self.event_id
-            ).first()
-            if db_event:
-                db_event.status = 'COMPLETED'
-                db.session.commit()
+            with app.app_context():  # ← ADD THIS
+                db_event = ScheduledEventDB.query.filter_by(
+                    event_id=self.event_id
+                ).first()
+                if db_event:
+                    db_event.status = 'COMPLETED'
+                    db.session.commit()
         except Exception as e:
             logger.error(f"Error updating event status: {e}")
 
@@ -2721,30 +2722,172 @@ def api_events_id(event_id):
 @app.route('/api/events/search', methods=['POST'])
 def api_events_search():
     """
-    Temporary endpoint to show events in game.
+    Search for available events.
     
-    This is a minimal implementation just for testing Phase 2.
-    Full implementation will be added in Phase 4.
+    Returns events in Zwift's expected format.
     """
     try:
-        # Return scheduled events that are open for registration
         events_list = []
+        current_time = time.time() * 1000
         
         for event_id, event in scheduled_events.items():
             state = event.get_state()
             
-            # Only show events that are open for registration or in lineup
-            if state in ['REGISTRATION', 'LINEUP']:
-                event_dict = event.to_dict()
-                events_list.append(event_dict)
+            # Only show events in REGISTRATION or LINEUP state
+            if state not in ['REGISTRATION', 'LINEUP']:
+                continue
+            
+            # Build event response
+            event_dict = {
+                'id': event.event_id,
+                'name': event.name,
+                'description': event.description or '',
+                'eventType': event.event_type,
+                'eventStart': event.scheduled_start,
+                'eventSubgroups': [],
+                'mapId': event.world_id,
+                'routeId': event.route_id,
+                'distanceInMeters': event.distance_meters,
+                'laps': event.laps,
+                'durationInSeconds': 0,  # Not used for races
+            }
+            
+            # Add categories
+            for cat in event.categories:
+                subgroup = {
+                    'id': cat['id'],
+                    'label': cat['label'],
+                    'name': cat['name'],
+                    'description': cat['description'],
+                    'subgroupLabel': cat['label_num'],
+                    'registeredCount': cat['registered_count']
+                }
+                event_dict['eventSubgroups'].append(subgroup)
+            
+            events_list.append(event_dict)
         
         logger.info(f"Events search: returning {len(events_list)} events")
         
-        return jsonify(events_list), 200
+        #return jsonify(events_list), 200
+        return jsonify({
+            'id': event.event_id,
+            'name': event.name,
+            'eventStart': event.scheduled_start,
+            'eventSubgroups': [...],  # ← Zwift needs this structure
+            'mapId': event.world_id,
+            'routeId': event.route_id,
+            # ... proper Zwift fields
+})
         
     except Exception as e:
         logger.error(f"Error in events search: {e}")
         return jsonify([]), 200
+
+@app.route('/api/events/<int:event_id>/register', methods=['POST'])
+@login_required
+def api_event_register(event_id):
+    """
+    Register current user for an event.
+    
+    Args:
+        event_id (int): Event to register for
+        
+    Returns:
+        JSON response with registration status
+    """
+    try:
+        if event_id not in scheduled_events:
+            return jsonify({'error': 'Event not found'}), 404
+        
+        event = scheduled_events[event_id]
+        player_id = current_user.player_id
+        
+        # Check if already registered
+        if player_id in event_registrations:
+            return jsonify({'error': 'Already registered'}), 400
+        
+        # Check if registration is open
+        if not event.can_register():
+            return jsonify({'error': 'Registration not open'}), 400
+        
+        # Get player profile
+        profile = get_partial_profile(player_id)
+        
+        # Determine category
+        category_id = event.get_category_for_player(profile)
+        
+        # Register player
+        event.registered_players[player_id] = category_id
+        event_registrations[player_id] = category_id
+        
+        # Update category count
+        for cat in event.categories:
+            if cat['id'] == category_id:
+                cat['registered_count'] += 1
+        
+        # Save to database
+        with app.app_context():
+            registration = EventRegistrationDB(
+                event_id=event_id,
+                event_subgroup_id=category_id,
+                player_id=player_id,
+                registered_at=int(time.time() * 1000)
+            )
+            db.session.add(registration)
+            db.session.commit()
+        
+        logger.info(f"Player {player_id} registered for event {event_id}, category {category_id}")
+        
+        return jsonify({
+            'success': True,
+            'event_id': event_id,
+            'category_id': category_id
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error registering for event: {e}")
+        return jsonify({'error': 'Registration failed'}), 500
+        
+@app.route('/api/events/<int:event_id>/unregister', methods=['POST'])
+@login_required
+def api_event_unregister(event_id):
+    """Unregister from an event"""
+    try:
+        player_id = current_user.player_id
+        
+        if player_id not in event_registrations:
+            return jsonify({'error': 'Not registered'}), 400
+        
+        if event_id not in scheduled_events:
+            return jsonify({'error': 'Event not found'}), 404
+        
+        event = scheduled_events[event_id]
+        category_id = event_registrations[player_id]
+        
+        # Remove registration
+        del event.registered_players[player_id]
+        del event_registrations[player_id]
+        
+        # Update category count
+        for cat in event.categories:
+            if cat['id'] == category_id:
+                cat['registered_count'] -= 1
+        
+        # Delete from database
+        with app.app_context():
+            EventRegistrationDB.query.filter_by(
+                event_id=event_id,
+                player_id=player_id
+            ).delete()
+            db.session.commit()
+        
+        logger.info(f"Player {player_id} unregistered from event {event_id}")
+        
+        return jsonify({'success': True}), 200
+        
+    except Exception as e:
+        logger.error(f"Error unregistering from event: {e}")
+        return jsonify({'error': 'Failed'}), 500
 
 def create_event_wat(rel_id, wa_type, pe, dest_ids):
     player_update = udp_node_msgs_pb2.WorldAttribute()
