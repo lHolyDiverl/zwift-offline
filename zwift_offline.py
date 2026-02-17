@@ -2243,14 +2243,48 @@ def api_events_id(event_id):
             return jsonify(convert_event_to_json(e))
     return '', 200
 
+#commented for now
+#@app.route('/api/events/search', methods=['POST'])
+#def api_events_search():
+    #limit = int(request.args.get('limit'))
+    #events = get_events(limit)
+    #if request.headers['Accept'] == 'application/json':
+        #return jsonify(convert_events_to_json(events))
+    #else:
+        #return events.SerializeToString(), 200
+        
+# ============================================================================
+# TEMPORARY EVENT ENDPOINT (for Phase 2 testing)
+# Will be replaced with full implementation in Phase 4
+# ============================================================================
+
 @app.route('/api/events/search', methods=['POST'])
 def api_events_search():
-    limit = int(request.args.get('limit'))
-    events = get_events(limit)
-    if request.headers['Accept'] == 'application/json':
-        return jsonify(convert_events_to_json(events))
-    else:
-        return events.SerializeToString(), 200
+    """
+    Temporary endpoint to show events in game.
+    
+    This is a minimal implementation just for testing Phase 2.
+    Full implementation will be added in Phase 4.
+    """
+    try:
+        # Return scheduled events that are open for registration
+        events_list = []
+        
+        for event_id, event in scheduled_events.items():
+            state = event.get_state()
+            
+            # Only show events that are open for registration or in lineup
+            if state in ['REGISTRATION', 'LINEUP']:
+                event_dict = event.to_dict()
+                events_list.append(event_dict)
+        
+        logger.info(f"Events search: returning {len(events_list)} events")
+        
+        return jsonify(events_list), 200
+        
+    except Exception as e:
+        logger.error(f"Error in events search: {e}")
+        return jsonify([]), 200
 
 def create_event_wat(rel_id, wa_type, pe, dest_ids):
     player_update = udp_node_msgs_pb2.WorldAttribute()
@@ -5187,19 +5221,26 @@ def load_scheduled_events_from_db():
                     'admin_id': db_event.created_by
                 }
                 
-                # Create ScheduledEvent object (class defined in next phase)
-                # This will be added in Phase 2
-                # event = ScheduledEvent(event_data)
-                # scheduled_events[db_event.event_id] = event
+                # Create ScheduledEvent object
+                event = ScheduledEvent(event_data)
+                scheduled_events[db_event.event_id] = event
                 
                 # Load registrations for this event
                 registrations = EventRegistrationDB.query.filter_by(
                     event_id=db_event.event_id
                 ).all()
                 
-                # for reg in registrations:
-                #     event.registered_players[reg.player_id] = reg.event_subgroup_id
-                #     event_registrations[reg.player_id] = reg.event_subgroup_id
+                for reg in registrations:
+                    event.registered_players[reg.player_id] = reg.event_subgroup_id
+                    event_registrations[reg.player_id] = reg.event_subgroup_id
+                    
+                    # Update category counts
+                    for cat in event.categories:
+                        if cat['id'] == reg.event_subgroup_id:
+                            cat['registered_count'] += 1
+                
+                # SCHEDULE AUTOMATIC ACTIVATION
+                schedule_event_activation(db_event.event_id)
                 
                 logger.info(f"Loaded event {db_event.event_id}: {db_event.name} "
                            f"with {len(registrations)} registrations")
