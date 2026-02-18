@@ -3735,9 +3735,9 @@ def jsonPrivateEventFeedToProtobuf(jfeed):
         pef.durationInSeconds = jpef['durationInSeconds']
         pef.distanceInMeters = jpef['distanceInMeters']
         pef.answeredCount = 1 #todo
-        pef.invitedTotalCount = jpef['invitedTotalCount']
-        pef.acceptedFolloweeCount = jpef['acceptedFolloweeCount']
-        pef.acceptedTotalCount = jpef['acceptedTotalCount']
+        pef.invitedTotalCount = jpef.get('invitedTotalCount', 0)
+        pef.acceptedFolloweeCount = jpef.get('acceptedFolloweeCount', 0)
+        pef.acceptedTotalCount = jpef.get('acceptedTotalCount', 0)
         if jpef['organizerImageUrl'] is not None:
             pef.organizerImageUrl = jpef['organizerImageUrl']
         pef.organizerProfileId = jpef['organizerProfileId']
