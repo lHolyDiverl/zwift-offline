@@ -3766,70 +3766,80 @@ def api_private_event_feed():
             ret.append(clone_and_append_social(current_user.player_id, pe))
     
     # ADD SCHEDULED EVENTS (races/time trials)
-    for event_id, event in scheduled_events.items():
-        state = event.get_state()
+    try:
+        logger.info(f"DEBUG: Processing {len(scheduled_events)} scheduled events")
         
-        # Only show events in REGISTRATION or LINEUP state
-        if state not in ['REGISTRATION', 'LINEUP']:
-            continue
-        
-        # Check if event start time is after requested start_date
-        event_start_timestamp = event.scheduled_start / 1000  # Convert ms to seconds
-        if event_start_timestamp <= start_date:
-            continue
-        
-        # Convert to Zwift's private event format
-        pe_formatted = {
-            'id': event.event_id,
-            'name': event.name,
-            'description': event.description or event.name,
-            'sport': 'CYCLING',
-            'eventStart': event.scheduled_start,
-            'routeId': event.route_id,
-            'startLocation': '',
-            'durationInSeconds': 0,
-            'distanceInMeters': event.distance_meters,
-            'workoutHash': 0,
-            'organizerProfileId': event.created_by,
-            'eventInvites': [],
-            'invitedProfileIds': [],
-            'showResults': True,
-            'laps': event.laps,
-            'rubberbanding': False,
-            'eventType': 1 if event.event_type == 'RACE' else 2,  # 1=RACE, 2=TIME_TRIAL
-            'eventSubgroups': [],
-            'visible': True,
-            'unlisted': False,
-            'mapId': event.world_id,
-            'courseId': event.world_id,
-            'jerseyHash': 0,
-            'cullingType': 'CULLED',
-            'rules': [],
-            'rulesId': ''
-        }
-        
-        # Add subgroups with complete required fields
-        for cat in event.categories:
-            subgroup = {
-                'id': cat['id'],
+        for event_id, event in scheduled_events.items():
+            state = event.get_state()
+            logger.info(f"DEBUG: Event {event_id} state={state}")
+            
+            # Only show events in REGISTRATION or LINEUP state
+            if state not in ['REGISTRATION', 'LINEUP']:
+                continue
+            
+            # Check if event start time is after requested start_date
+            event_start_timestamp = event.scheduled_start / 1000
+            if event_start_timestamp <= start_date:
+                continue
+            
+            # Convert to Zwift's private event format
+            pe_formatted = {
+                'id': event.event_id,
+                'name': event.name,
+                'description': event.description or event.name,
+                'sport': 'CYCLING',
+                'eventStart': event.scheduled_start,
                 'routeId': event.route_id,
-                'laps': event.laps,
-                'distanceInMeters': event.distance_meters,
                 'startLocation': '',
-                'paceType': 0,
-                'fromPaceValue': 0,
-                'toPaceValue': 0,
-                'label': cat['label'],
-                'name': cat['name'],
-                'description': cat['description'],
-                'subgroupLabel': cat['label_num'],
-                'registeredCount': cat['registered_count']
+                'durationInSeconds': 0,
+                'distanceInMeters': event.distance_meters,
+                'workoutHash': 0,
+                'organizerProfileId': event.created_by,
+                'eventInvites': [],
+                'invitedProfileIds': [],
+                'showResults': True,
+                'laps': event.laps,
+                'rubberbanding': False,
+                'eventType': 1 if event.event_type == 'RACE' else 2,
+                'eventSubgroups': [],
+                'visible': True,
+                'unlisted': False,
+                'mapId': event.world_id,
+                'courseId': event.world_id,
+                'jerseyHash': 0,
+                'cullingType': 'CULLED',
+                'rules': [],
+                'rulesId': ''
             }
-            pe_formatted['eventSubgroups'].append(subgroup)
-        
-        ret.append(pe_formatted)
+            
+            # Add subgroups
+            for cat in event.categories:
+                subgroup = {
+                    'id': cat['id'],
+                    'routeId': event.route_id,
+                    'laps': event.laps,
+                    'distanceInMeters': event.distance_meters,
+                    'startLocation': '',
+                    'paceType': 0,
+                    'fromPaceValue': 0,
+                    'toPaceValue': 0,
+                    'label': cat['label'],
+                    'name': cat['name'],
+                    'description': cat['description'],
+                    'subgroupLabel': cat['label_num'],
+                    'registeredCount': cat['registered_count']
+                }
+                pe_formatted['eventSubgroups'].append(subgroup)
+            
+            ret.append(pe_formatted)
+            logger.info(f"DEBUG: Added event {event_id} to feed")
+            
+    except Exception as e:
+        logger.error(f"ERROR adding scheduled events to feed: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
     
-    logger.info(f"Private event feed: returning {len(ret)} events (including scheduled events)")
+    logger.info(f"Private event feed: returning {len(ret)} total events")
     
     if request.headers['Accept'] == 'application/json':
         return jsonify(ret)
