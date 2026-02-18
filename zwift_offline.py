@@ -2399,6 +2399,10 @@ def api_events_search():
                 event_dict['eventSubgroups'].append(subgroup)
             
             events_list.append(event_dict)
+            
+            # DEBUG: Log the exact JSON we're returning
+            import json
+            logger.info(f"DEBUG Event JSON:\n{json.dumps(event_dict, indent=2)}")
         
         logger.info(f"Events search: returning {len(events_list)} events")
         
