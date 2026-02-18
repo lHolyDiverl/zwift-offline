@@ -3738,13 +3738,15 @@ def jsonPrivateEventFeedToProtobuf(jfeed):
         pef.invitedTotalCount = jpef.get('invitedTotalCount', 0)
         pef.acceptedFolloweeCount = jpef.get('acceptedFolloweeCount', 0)
         pef.acceptedTotalCount = jpef.get('acceptedTotalCount', 0)
-        if jpef['organizerImageUrl'] is not None:
-            pef.organizerImageUrl = jpef['organizerImageUrl']
-        pef.organizerProfileId = jpef['organizerProfileId']
-        pef.organizerFirstName = jpef['organizerFirstName']
-        pef.organizerLastName = jpef['organizerLastName']
-        pef.updateDate = stime_to_timestamp(jpef['updateDate'])*1000
-        pef.subgroupId = jpef['eventSubgroupId']
+        # Use .get() for organizerImageUrl to handle missing field
+        organizer_image = jpef.get('organizerImageUrl')
+        if organizer_image is not None:
+            pef.organizerImageUrl = organizer_image
+        pef.organizerProfileId = jpef.get('organizerProfileId', 0)
+        pef.organizerFirstName = jpef.get('organizerFirstName', '')
+        pef.organizerLastName = jpef.get('organizerLastName', '')
+        pef.updateDate = stime_to_timestamp(jpef.get('updateDate', jpef['eventStart']))*1000
+        pef.subgroupId = jpef.get('eventSubgroupId', jpef['id'])
         pef.laps = jpef['laps']
         pef.rubberbanding = jpef['rubberbanding']
     return ret
