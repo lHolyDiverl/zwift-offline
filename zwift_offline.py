@@ -3765,6 +3765,7 @@ def api_private_event_feed():
           or (past_events and pe['organizerProfileId'] == current_user.player_id):
             ret.append(clone_and_append_social(current_user.player_id, pe))
     
+    
     # ADD SCHEDULED EVENTS (races/time trials)
     try:
         logger.info(f"DEBUG: Processing {len(scheduled_events)} scheduled events")
