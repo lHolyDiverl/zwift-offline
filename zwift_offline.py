@@ -687,12 +687,13 @@ def activate_event(event_id):
     if not activated_any:
         logger.warning(f"Event {event_id} activated but no categories have registrations")
     
-    # Update database status
+    # Update database
     try:
-        db_event = ScheduledEventDB.query.filter_by(event_id=event_id).first()
-        if db_event:
-            db_event.status = 'ACTIVE'
-            db.session.commit()
+        with app.app_context():
+            db_event = ScheduledEventDB.query.filter_by(event_id=event_id).first()
+            if db_event:
+                db_event.status = 'ACTIVE'
+                db.session.commit()
     except Exception as e:
         logger.error(f"Error updating event status: {e}")
     
@@ -2400,10 +2401,6 @@ def api_events_search():
             
             events_list.append(event_dict)
             
-            # DEBUG: Log the exact JSON we're returning
-            import json
-            logger.info(f"DEBUG Event JSON:\n{json.dumps(event_dict, indent=2)}")
-        
         logger.info(f"Events search: returning {len(events_list)} events")
         
         return jsonify(events_list), 200
@@ -3757,14 +3754,83 @@ def jsonPrivateEventFeedToProtobuf(jfeed):
 @login_required
 def api_private_event_feed():
     start_date = int(request.args.get('start_date')) / 1000
-    if start_date == -1800: start_date += time.time() # first ZA request has start_date=-1800000
+    if start_date == -1800: start_date += time.time()
     past_events = request.args.get('organizer_only_past_events') == 'true'
     ret = []
+    
+    # Original private events (meetups)
     for pe in ActualPrivateEvents().values():
         if ((current_user.player_id in pe['invitedProfileIds'] or current_user.player_id == pe['organizerProfileId']) \
           and stime_to_timestamp(pe['eventStart']) > start_date) \
           or (past_events and pe['organizerProfileId'] == current_user.player_id):
             ret.append(clone_and_append_social(current_user.player_id, pe))
+    
+    # ADD SCHEDULED EVENTS (races/time trials)
+    for event_id, event in scheduled_events.items():
+        state = event.get_state()
+        
+        # Only show events in REGISTRATION or LINEUP state
+        if state not in ['REGISTRATION', 'LINEUP']:
+            continue
+        
+        # Check if event start time is after requested start_date
+        event_start_timestamp = event.scheduled_start / 1000  # Convert ms to seconds
+        if event_start_timestamp <= start_date:
+            continue
+        
+        # Convert to Zwift's private event format
+        pe_formatted = {
+            'id': event.event_id,
+            'name': event.name,
+            'description': event.description or event.name,
+            'sport': 'CYCLING',
+            'eventStart': event.scheduled_start,
+            'routeId': event.route_id,
+            'startLocation': '',
+            'durationInSeconds': 0,
+            'distanceInMeters': event.distance_meters,
+            'workoutHash': 0,
+            'organizerProfileId': event.created_by,
+            'eventInvites': [],
+            'invitedProfileIds': [],
+            'showResults': True,
+            'laps': event.laps,
+            'rubberbanding': False,
+            'eventType': 1 if event.event_type == 'RACE' else 2,  # 1=RACE, 2=TIME_TRIAL
+            'eventSubgroups': [],
+            'visible': True,
+            'unlisted': False,
+            'mapId': event.world_id,
+            'courseId': event.world_id,
+            'jerseyHash': 0,
+            'cullingType': 'CULLED',
+            'rules': [],
+            'rulesId': ''
+        }
+        
+        # Add subgroups with complete required fields
+        for cat in event.categories:
+            subgroup = {
+                'id': cat['id'],
+                'routeId': event.route_id,
+                'laps': event.laps,
+                'distanceInMeters': event.distance_meters,
+                'startLocation': '',
+                'paceType': 0,
+                'fromPaceValue': 0,
+                'toPaceValue': 0,
+                'label': cat['label'],
+                'name': cat['name'],
+                'description': cat['description'],
+                'subgroupLabel': cat['label_num'],
+                'registeredCount': cat['registered_count']
+            }
+            pe_formatted['eventSubgroups'].append(subgroup)
+        
+        ret.append(pe_formatted)
+    
+    logger.info(f"Private event feed: returning {len(ret)} events (including scheduled events)")
+    
     if request.headers['Accept'] == 'application/json':
         return jsonify(ret)
     return jsonPrivateEventFeedToProtobuf(ret).SerializeToString(), 200
