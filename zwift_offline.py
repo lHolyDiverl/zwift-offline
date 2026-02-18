@@ -275,25 +275,17 @@ class ActiveEventInstance:
     """
     Manages an active event instance from lineup through finish.
     
-    This class handles:
-    - Race countdown and start
-    - Real-time position tracking
-    - Finish line detection
-    - Result recording
-    
-    Lifecycle: Created when lineup starts -> WAITING -> COUNTDOWN -> 
-               RACING -> FINISHED
-    
-    One ActiveEventInstance per category (A, E, etc.)
+    State machine: WAITING -> COUNTDOWN -> RACING -> FINISHED
+    One instance per category (A, E, etc.)
     """
     
     def __init__(self, scheduled_event, category):
         """
-        Initialize an active event instance.
+        Initialize active event instance for a specific category.
         
         Args:
             scheduled_event (ScheduledEvent): The parent event
-            category (dict): Category data from scheduled_event.categories
+            category (dict): Category data (id, label, name, etc.)
         """
         self.event_subgroup_id = category['id']
         self.event_id = scheduled_event.event_id
@@ -302,19 +294,19 @@ class ActiveEventInstance:
         
         # Timing
         self.scheduled_start = scheduled_event.scheduled_start
-        self.actual_start_time = None  # Set when countdown completes
-        self.countdown_start_time = None  # Set when countdown begins
+        self.actual_start_time = None
+        self.countdown_start_time = None
         
-        # State machine: WAITING -> COUNTDOWN -> RACING -> FINISHED
+        # State: WAITING -> COUNTDOWN -> RACING -> FINISHED
         self.state = 'WAITING'
         
         # Participants: player_id -> participant_data dict
         self.participants = {}
         
         # Race tracking
-        self.race_start_distance = {}  # player_id -> distance at race start
-        self.finish_times = {}  # player_id -> finish timestamp
-        self.finish_order = []  # Ordered list of finishers
+        self.race_start_distance = {}
+        self.finish_times = {}
+        self.finish_order = []
         
         # Background threads
         self.countdown_thread = None
@@ -344,7 +336,7 @@ class ActiveEventInstance:
                 'first_name': player_profile.first_name,
                 'last_name': player_profile.last_name,
                 'weight_grams': player_profile.weight_in_grams,
-                # Use getattr() with default for optional fields
+                # Use getattr() with defaults for optional fields
                 'ftp': getattr(player_profile, 'ftp', 0),
                 # PartialProfile uses 'male', full profile uses 'is_male'
                 'is_male': getattr(player_profile, 'is_male', 
@@ -353,46 +345,37 @@ class ActiveEventInstance:
         }
         
         # Set player's groupId for visual isolation
-        # This is KEY for single-world event isolation!
         if player_id in online:
             online[player_id].groupId = self.event_subgroup_id
             logger.debug(f"Set player {player_id} groupId to {self.event_subgroup_id}")
     
     def remove_participant(self, player_id):
         """
-        Remove a player from the event (unregister or DNF).
+        Remove a player from the event.
         
         Args:
-            player_id (int): Player to remove
+            player_id (int): Player ID
         """
         if player_id in self.participants:
             del self.participants[player_id]
-            logger.info(f"Removed player {player_id} from event {self.event_subgroup_id}")
         
-        # Clear groupId
         if player_id in online:
             online[player_id].groupId = 0
     
     def start_countdown(self):
-        """
-        Begin 10-second countdown to race start.
-        
-        Spawns a background thread that:
-        1. Counts down from 10 to 1
-        2. Sends messages to participants
-        3. Calls start_race() at zero
-        """
+        """Begin 10-second countdown to race start."""
         self.state = 'COUNTDOWN'
         self.countdown_start_time = time.time()
         
         logger.info(f"Starting countdown for event {self.event_subgroup_id}")
         
         def countdown_worker():
-            """Background countdown thread"""
+            """Background thread that runs the countdown."""
             try:
-                # 10 second countdown
                 for i in range(10, 0, -1):
-                    self.send_countdown_message(i)
+                    # Send countdown message to players
+                    for player_id in self.participants:
+                        logger.debug(f"Countdown {i} for player {player_id}")
                     time.sleep(1)
                 
                 # START!
@@ -405,32 +388,8 @@ class ActiveEventInstance:
         self.countdown_thread.daemon = True
         self.countdown_thread.start()
     
-    def send_countdown_message(self, seconds):
-        """
-        Send countdown message to all participants.
-        
-        Args:
-            seconds (int): Seconds remaining
-        """
-        message = f"Race starts in {seconds}..."
-        
-        for player_id in self.participants:
-            if player_id in online:
-                # Send chat message
-                # (Implementation of send_event_message in next PR)
-                logger.debug(f"Countdown {seconds} for player {player_id}")
-    
     def start_race(self):
-        """
-        Execute race start - called when countdown reaches zero.
-        
-        This:
-        1. Changes state to RACING
-        2. Records start time for all participants
-        3. Records starting distances
-        4. Resets race timers
-        5. Starts position tracking thread
-        """
+        """Execute race start after countdown."""
         self.state = 'RACING'
         self.actual_start_time = time.time()
         
@@ -443,33 +402,25 @@ class ActiveEventInstance:
             
             if player_id in online:
                 state = online[player_id]
-                # Record distance at start for calculating race distance
                 participant['distance_at_start'] = state.distance
                 self.race_start_distance[player_id] = state.distance
-                
-                # Reset race timer to zero
-                state.time = 0
+                state.time = 0  # Reset race timer
                 
                 logger.debug(f"Player {player_id} start distance: {state.distance}m")
         
-        # Start background position tracking
+        # Start position tracking
         self.start_position_tracking()
     
     def start_position_tracking(self):
-        """
-        Start background thread to update race positions continuously.
-        
-        Updates positions every second while state == RACING.
-        """
+        """Start background thread to update race positions."""
         def position_tracker():
-            """Background position tracking thread"""
+            """Background thread that updates positions every second."""
             try:
                 while self.state == 'RACING':
                     self.update_race_positions()
-                    time.sleep(1)  # Update every second
-                    
+                    time.sleep(1)
             except Exception as e:
-                logger.error(f"Error in position tracking thread: {e}")
+                logger.error(f"Error in position tracking: {e}")
         
         self.position_update_thread = threading.Thread(target=position_tracker)
         self.position_update_thread.daemon = True
@@ -478,13 +429,7 @@ class ActiveEventInstance:
         logger.info(f"Started position tracking for event {self.event_subgroup_id}")
     
     def update_race_positions(self):
-        """
-        Calculate and update current race positions.
-        
-        Sorts riders by:
-        1. Finished riders (by finish order)
-        2. Racing riders (by distance covered)
-        """
+        """Calculate and update current race positions."""
         if self.state != 'RACING':
             return
         
@@ -493,10 +438,10 @@ class ActiveEventInstance:
         # Add racing riders
         for player_id, participant in self.participants.items():
             if participant['finish_time'] or participant['dnf']:
-                continue  # Skip finished/DNF riders
+                continue
                 
             if player_id not in online:
-                continue  # Player offline
+                continue
             
             state = online[player_id]
             race_distance = state.distance - self.race_start_distance.get(player_id, 0)
@@ -504,35 +449,28 @@ class ActiveEventInstance:
             standings.append({
                 'player_id': player_id,
                 'distance': race_distance,
-                'total_distance': state.distance,
                 'finished': False
             })
         
-        # Add finished riders (in finish order)
+        # Add finished riders at the front
         for i, player_id in enumerate(self.finish_order):
-            participant = self.participants[player_id]
-            standings.insert(i, {  # Insert at their finish position
+            standings.insert(i, {
                 'player_id': player_id,
                 'distance': self.scheduled_event.distance_meters,
-                'total_distance': 0,
-                'finished': True,
-                'finish_time': participant['finish_time'],
-                'elapsed': participant['finish_time'] - participant['start_time']
+                'finished': True
             })
         
         # Update positions
         for i, standing in enumerate(standings):
             player_id = standing['player_id']
             self.participants[player_id]['position'] = i + 1
-            
+        
         logger.debug(f"Event {self.event_subgroup_id}: {len(standings)} riders, "
                     f"{len(self.finish_order)} finished")
-      
+    
     def check_finish_line(self, player_id, player_state):
         """
         Check if a player has crossed the finish line.
-        
-        Called on every player state update during race.
         
         Args:
             player_id (int): Player to check
@@ -549,20 +487,19 @@ class ActiveEventInstance:
             
         participant = self.participants[player_id]
         if participant['finish_time'] or participant['dnf']:
-            return False  # Already finished or DNF
+            return False
         
-        # Calculate race distance
+        # Calculate race distance (distance since race start)
         race_distance = player_state.distance - self.race_start_distance.get(player_id, 0)
         target_distance = self.scheduled_event.distance_meters
         
-        # Check completion criteria
-        # Option 1: Lap-based race
+        # Check if finished
         if self.scheduled_event.laps > 0:
+            # Lap-based race
             if player_state.laps >= self.scheduled_event.laps:
                 return self.record_finish(player_id)
-        
-        # Option 2: Distance-based race
         elif target_distance > 0:
+            # Distance-based race
             if race_distance >= target_distance:
                 return self.record_finish(player_id)
         
@@ -576,7 +513,7 @@ class ActiveEventInstance:
             player_id (int): Player who finished
             
         Returns:
-            bool: True if successfully recorded
+            bool: True
         """
         finish_time = time.time()
         participant = self.participants[player_id]
@@ -584,7 +521,6 @@ class ActiveEventInstance:
         participant['finish_time'] = finish_time
         elapsed = finish_time - participant['start_time']
         
-        # Add to finish order
         self.finish_order.append(player_id)
         position = len(self.finish_order)
         participant['position'] = position
@@ -592,35 +528,23 @@ class ActiveEventInstance:
         logger.info(f"Player {player_id} finished in position {position}, "
                    f"time: {elapsed:.2f}s ({elapsed/60:.2f} min)")
         
-        # Save to race results
-        # (Implementation in next PR)
-        # self.save_race_result(player_id, position, elapsed)
-        
-        # Send finish notification
-        # (Implementation in next PR)
-        # send_finish_notification(player_id, self.event_subgroup_id, position, elapsed)
-        
-        # Check if all participants finished
+        # Check if all finished
         finished_count = len(self.finish_order)
         dnf_count = sum(1 for p in self.participants.values() if p['dnf'])
         total_should_finish = len(self.participants) - dnf_count
         
         if finished_count >= total_should_finish:
-            logger.info(f"All participants finished in event {self.event_subgroup_id}")
             self.finish_event()
         
         return True
     
     def finish_event(self):
-        """
-        Mark event as completed.
-        
-        Moves event from active to completed state.
-        """
+        """Mark event as completed and archive results."""
         self.state = 'FINISHED'
-        logger.info(f"Event {self.event_subgroup_id} completed")
+        logger.info(f"Event {self.event_subgroup_id} completed with "
+                   f"{len(self.finish_order)} finishers")
         
-        # Move to completed events archive
+        # Archive results
         if self.event_id not in completed_events:
             completed_events[self.event_id] = {
                 'event_data': self.scheduled_event,
@@ -628,20 +552,19 @@ class ActiveEventInstance:
                 'completed_at': time.time()
             }
         
+        from copy import deepcopy
         completed_events[self.event_id]['categories'][self.event_subgroup_id] = {
             'results': self.finish_order.copy(),
             'participants': deepcopy(self.participants),
             'actual_start': self.actual_start_time
         }
         
-        # Update database status
+        # Update event status in database
         try:
-            with app.app_context():  # ← ADD THIS
-                db_event = ScheduledEventDB.query.filter_by(
-                    event_id=self.event_id
-                ).first()
+            with app.app_context():  # ← ADD THIS LINE
+                db_event = ScheduledEventDB.query.filter_by(event_id=event_id).first()
                 if db_event:
-                    db_event.status = 'COMPLETED'
+                    db_event.status = 'ACTIVE'
                     db.session.commit()
         except Exception as e:
             logger.error(f"Error updating event status: {e}")
@@ -1030,304 +953,6 @@ class ScheduledEvent:
             'state': self.get_state(),
             'total_registered': len(self.registered_players)
         }
-
-
-class ActiveEventInstance:
-    """
-    Manages an active event instance from lineup through finish.
-    
-    State machine: WAITING -> COUNTDOWN -> RACING -> FINISHED
-    One instance per category (A, E, etc.)
-    """
-    
-    def __init__(self, scheduled_event, category):
-        """
-        Initialize active event instance for a specific category.
-        
-        Args:
-            scheduled_event (ScheduledEvent): The parent event
-            category (dict): Category data (id, label, name, etc.)
-        """
-        self.event_subgroup_id = category['id']
-        self.event_id = scheduled_event.event_id
-        self.scheduled_event = scheduled_event
-        self.category = category
-        
-        # Timing
-        self.scheduled_start = scheduled_event.scheduled_start
-        self.actual_start_time = None
-        self.countdown_start_time = None
-        
-        # State: WAITING -> COUNTDOWN -> RACING -> FINISHED
-        self.state = 'WAITING'
-        
-        # Participants: player_id -> participant_data dict
-        self.participants = {}
-        
-        # Race tracking
-        self.race_start_distance = {}
-        self.finish_times = {}
-        self.finish_order = []
-        
-        # Background threads
-        self.countdown_thread = None
-        self.position_update_thread = None
-        
-        logger.info(f"Created ActiveEventInstance for event {self.event_id}, "
-                   f"category {category['label']} (ID: {self.event_subgroup_id})")
-    
-    def add_participant(self, player_id, player_profile):
-        """
-        Add a player to this event instance.
-        
-        Args:
-            player_id (int): Player ID
-            player_profile: Player profile object
-        """
-        self.participants[player_id] = {
-            'player_id': player_id,
-            'join_time': time.time(),
-            'ready': False,
-            'start_time': None,
-            'finish_time': None,
-            'distance_at_start': 0,
-            'position': 0,
-            'dnf': False,
-            'profile_snapshot': {
-                'first_name': player_profile.first_name,
-                'last_name': player_profile.last_name,
-                'weight_grams': player_profile.weight_in_grams,
-                'ftp': player_profile.ftp,
-                'is_male': player_profile.is_male
-            }
-        }
-        
-        # Set player's groupId for visual isolation
-        if player_id in online:
-            online[player_id].groupId = self.event_subgroup_id
-            logger.debug(f"Set player {player_id} groupId to {self.event_subgroup_id}")
-    
-    def remove_participant(self, player_id):
-        """
-        Remove a player from the event.
-        
-        Args:
-            player_id (int): Player ID
-        """
-        if player_id in self.participants:
-            del self.participants[player_id]
-        
-        if player_id in online:
-            online[player_id].groupId = 0
-    
-    def start_countdown(self):
-        """Begin 10-second countdown to race start."""
-        self.state = 'COUNTDOWN'
-        self.countdown_start_time = time.time()
-        
-        logger.info(f"Starting countdown for event {self.event_subgroup_id}")
-        
-        def countdown_worker():
-            """Background thread that runs the countdown."""
-            try:
-                for i in range(10, 0, -1):
-                    # Send countdown message to players
-                    for player_id in self.participants:
-                        logger.debug(f"Countdown {i} for player {player_id}")
-                    time.sleep(1)
-                
-                # START!
-                self.start_race()
-                
-            except Exception as e:
-                logger.error(f"Error in countdown thread: {e}")
-        
-        self.countdown_thread = threading.Thread(target=countdown_worker)
-        self.countdown_thread.daemon = True
-        self.countdown_thread.start()
-    
-    def start_race(self):
-        """Execute race start after countdown."""
-        self.state = 'RACING'
-        self.actual_start_time = time.time()
-        
-        logger.info(f"Event {self.event_subgroup_id} RACE START with "
-                   f"{len(self.participants)} participants")
-        
-        # Record start data for each participant
-        for player_id, participant in self.participants.items():
-            participant['start_time'] = self.actual_start_time
-            
-            if player_id in online:
-                state = online[player_id]
-                participant['distance_at_start'] = state.distance
-                self.race_start_distance[player_id] = state.distance
-                state.time = 0  # Reset race timer
-                
-                logger.debug(f"Player {player_id} start distance: {state.distance}m")
-        
-        # Start position tracking
-        self.start_position_tracking()
-    
-    def start_position_tracking(self):
-        """Start background thread to update race positions."""
-        def position_tracker():
-            """Background thread that updates positions every second."""
-            try:
-                while self.state == 'RACING':
-                    self.update_race_positions()
-                    time.sleep(1)
-            except Exception as e:
-                logger.error(f"Error in position tracking: {e}")
-        
-        self.position_update_thread = threading.Thread(target=position_tracker)
-        self.position_update_thread.daemon = True
-        self.position_update_thread.start()
-        
-        logger.info(f"Started position tracking for event {self.event_subgroup_id}")
-    
-    def update_race_positions(self):
-        """Calculate and update current race positions."""
-        if self.state != 'RACING':
-            return
-        
-        standings = []
-        
-        # Add racing riders
-        for player_id, participant in self.participants.items():
-            if participant['finish_time'] or participant['dnf']:
-                continue
-                
-            if player_id not in online:
-                continue
-            
-            state = online[player_id]
-            race_distance = state.distance - self.race_start_distance.get(player_id, 0)
-            
-            standings.append({
-                'player_id': player_id,
-                'distance': race_distance,
-                'finished': False
-            })
-        
-        # Add finished riders at the front
-        for i, player_id in enumerate(self.finish_order):
-            standings.insert(i, {
-                'player_id': player_id,
-                'distance': self.scheduled_event.distance_meters,
-                'finished': True
-            })
-        
-        # Update positions
-        for i, standing in enumerate(standings):
-            player_id = standing['player_id']
-            self.participants[player_id]['position'] = i + 1
-        
-        logger.debug(f"Event {self.event_subgroup_id}: {len(standings)} riders, "
-                    f"{len(self.finish_order)} finished")
-    
-    def check_finish_line(self, player_id, player_state):
-        """
-        Check if a player has crossed the finish line.
-        
-        Args:
-            player_id (int): Player to check
-            player_state: PlayerState protobuf object
-            
-        Returns:
-            bool: True if player finished this update
-        """
-        if self.state != 'RACING':
-            return False
-            
-        if player_id not in self.participants:
-            return False
-            
-        participant = self.participants[player_id]
-        if participant['finish_time'] or participant['dnf']:
-            return False
-        
-        # Calculate race distance (distance since race start)
-        race_distance = player_state.distance - self.race_start_distance.get(player_id, 0)
-        target_distance = self.scheduled_event.distance_meters
-        
-        # Check if finished
-        if self.scheduled_event.laps > 0:
-            # Lap-based race
-            if player_state.laps >= self.scheduled_event.laps:
-                return self.record_finish(player_id)
-        elif target_distance > 0:
-            # Distance-based race
-            if race_distance >= target_distance:
-                return self.record_finish(player_id)
-        
-        return False
-    
-    def record_finish(self, player_id):
-        """
-        Record a player finishing the race.
-        
-        Args:
-            player_id (int): Player who finished
-            
-        Returns:
-            bool: True
-        """
-        finish_time = time.time()
-        participant = self.participants[player_id]
-        
-        participant['finish_time'] = finish_time
-        elapsed = finish_time - participant['start_time']
-        
-        self.finish_order.append(player_id)
-        position = len(self.finish_order)
-        participant['position'] = position
-        
-        logger.info(f"Player {player_id} finished in position {position}, "
-                   f"time: {elapsed:.2f}s ({elapsed/60:.2f} min)")
-        
-        # Check if all finished
-        finished_count = len(self.finish_order)
-        dnf_count = sum(1 for p in self.participants.values() if p['dnf'])
-        total_should_finish = len(self.participants) - dnf_count
-        
-        if finished_count >= total_should_finish:
-            self.finish_event()
-        
-        return True
-    
-    def finish_event(self):
-        """Mark event as completed and archive results."""
-        self.state = 'FINISHED'
-        logger.info(f"Event {self.event_subgroup_id} completed with "
-                   f"{len(self.finish_order)} finishers")
-        
-        # Archive results
-        if self.event_id not in completed_events:
-            completed_events[self.event_id] = {
-                'event_data': self.scheduled_event,
-                'categories': {},
-                'completed_at': time.time()
-            }
-        
-        from copy import deepcopy
-        completed_events[self.event_id]['categories'][self.event_subgroup_id] = {
-            'results': self.finish_order.copy(),
-            'participants': deepcopy(self.participants),
-            'actual_start': self.actual_start_time
-        }
-        
-        # Update database status
-        try:
-            with app.app_context():
-                db_event = ScheduledEventDB.query.filter_by(
-                    event_id=self.event_id
-                ).first()
-                if db_event:
-                    db_event.status = 'COMPLETED'
-                    db.session.commit()
-        except Exception as e:
-            logger.error(f"Error updating event status: {e}")
 
 class AnonUser(User, AnonymousUserMixin, db.Model):
     username = "zoffline"
@@ -2737,7 +2362,7 @@ def api_events_search():
             if state not in ['REGISTRATION', 'LINEUP']:
                 continue
             
-            # Build event response
+            # Build event response with all Zwift-expected fields
             event_dict = {
                 'id': event.event_id,
                 'name': event.name,
@@ -2749,7 +2374,16 @@ def api_events_search():
                 'routeId': event.route_id,
                 'distanceInMeters': event.distance_meters,
                 'laps': event.laps,
-                'durationInSeconds': 0,  # Not used for races
+                'durationInSeconds': 0,
+                # Additional fields Zwift may expect
+                'invisible': False,
+                'unlisted': False,
+                'jerseyHash': 0,
+                'sport': 'CYCLING',
+                'cullingType': 'CULLED',
+                'eventType': 'GROUP_EVENT',
+                'rules': [],
+                'rulesId': '',
             }
             
             # Add categories
