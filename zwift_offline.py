@@ -2381,9 +2381,9 @@ def api_events_search():
                 'jerseyHash': 0,
                 'sport': 'CYCLING',
                 'cullingType': 'CULLED',
-                'eventType': 'GROUP_EVENT',
+                # 'eventType': 'GROUP_EVENT',  ← Commented out (duplicate)
                 'rules': [],
-                'rulesId': '',
+                'rulesId': ''
             }
             
             # Add categories
