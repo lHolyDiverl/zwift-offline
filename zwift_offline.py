@@ -2345,68 +2345,129 @@ def api_events_id(event_id):
 # Will be replaced with full implementation in Phase 4
 # ============================================================================
 
+def scheduled_events_to_protobuf():
+    """Convert scheduled events to protobuf format for events search."""
+    events = events_pb2.Events()
+    current_time = time.time() * 1000
+    
+    for event_id, event in scheduled_events.items():
+        state = event.get_state()
+        
+        # Only show events in REGISTRATION or LINEUP state
+        if state not in ['REGISTRATION', 'LINEUP']:
+            continue
+        
+        # Create protobuf event
+        pb_event = events.events.add()
+        pb_event.server_realm = udp_node_msgs_pb2.ZofflineConstants.RealmID
+        pb_event.id = event.event_id
+        pb_event.name = event.name
+        pb_event.description = event.description or ''
+        pb_event.route_id = event.route_id
+        pb_event.course_id = event.world_id
+        pb_event.sport = profile_pb2.Sport.Value('CYCLING')
+        pb_event.lateJoinInMinutes = 30
+        pb_event.eventStart = event.scheduled_start
+        pb_event.visible = True
+        pb_event.overrideMapPreferences = False
+        pb_event.invisibleToNonParticipants = False
+        pb_event.distanceInMeters = event.distance_meters
+        pb_event.laps = event.laps
+        pb_event.durationInSeconds = 0
+        pb_event.eventType = events_pb2.EventType.RACE if event.event_type == 'RACE' else events_pb2.EventType.GROUP_RIDE
+        pb_event.e_wtrl = False
+        
+        # Add categories as subgroups
+        eventStartWT = world_time()
+        for cat in event.categories:
+            event_cat = pb_event.category.add()
+            event_cat.id = cat['id']
+            event_cat.registrationEnd = event.scheduled_start
+            event_cat.registrationEndWT = eventStartWT + (event.scheduled_start - current_time)
+            event_cat.eventSubgroupStart = event.scheduled_start - 2 * 60000  # fixes HUD timer
+            event_cat.eventSubgroupStartWT = eventStartWT + (event.scheduled_start - current_time) - 2 * 60000
+            event_cat.route_id = event.route_id
+            event_cat.startLocation = cat['label_num']
+            event_cat.label = cat['label_num']
+            event_cat.distanceInMeters = event.distance_meters
+            event_cat.laps = event.laps
+            event_cat.durationInSeconds = 0
+            event_cat.jerseyHash = 0
+            event_cat.name = cat['name']
+            event_cat.description = cat['description']
+            event_cat.registrationCount = cat['registered_count']
+    
+    return events
+
 @app.route('/api/events/search', methods=['POST'])
 def api_events_search():
     """
     Search for available events.
     
-    Returns events in Zwift's expected format.
+    Returns events in Zwift's expected format (protobuf or JSON).
     """
     try:
-        events_list = []
-        current_time = time.time() * 1000
-        
-        for event_id, event in scheduled_events.items():
-            state = event.get_state()
+        # Check if client wants JSON or protobuf
+        if request.headers.get('Accept') == 'application/json':
+            # Return JSON format
+            events_list = []
+            current_time = time.time() * 1000
             
-            # Only show events in REGISTRATION or LINEUP state
-            if state not in ['REGISTRATION', 'LINEUP']:
-                continue
-            
-            # Build event response with all Zwift-expected fields
-            event_dict = {
-                'id': event.event_id,
-                'name': event.name,
-                'description': event.description or '',
-                'eventType': event.event_type,
-                'eventStart': event.scheduled_start,
-                'eventSubgroups': [],
-                'mapId': event.world_id,
-                'routeId': event.route_id,
-                'distanceInMeters': event.distance_meters,
-                'laps': event.laps,
-                'durationInSeconds': 0,
-                # Additional fields Zwift may expect
-                'invisible': False,
-                'unlisted': False,
-                'jerseyHash': 0,
-                'sport': 'CYCLING',
-                'cullingType': 'CULLED',
-                # 'eventType': 'GROUP_EVENT',  ← Commented out (duplicate)
-                'rules': [],
-                'rulesId': ''
-            }
-            
-            # Add categories
-            for cat in event.categories:
-                subgroup = {
-                    'id': cat['id'],
-                    'label': cat['label'],
-                    'name': cat['name'],
-                    'description': cat['description'],
-                    'subgroupLabel': cat['label_num'],
-                    'registeredCount': cat['registered_count']
+            for event_id, event in scheduled_events.items():
+                state = event.get_state()
+                
+                # Only show events in REGISTRATION or LINEUP state
+                if state not in ['REGISTRATION', 'LINEUP']:
+                    continue
+                
+                # Build event response with all Zwift-expected fields
+                event_dict = {
+                    'id': event.event_id,
+                    'name': event.name,
+                    'description': event.description or '',
+                    'eventType': event.event_type,
+                    'eventStart': event.scheduled_start,
+                    'eventSubgroups': [],
+                    'mapId': event.world_id,
+                    'routeId': event.route_id,
+                    'distanceInMeters': event.distance_meters,
+                    'laps': event.laps,
+                    'durationInSeconds': 0,
+                    'invisible': False,
+                    'unlisted': False,
+                    'jerseyHash': 0,
+                    'sport': 'CYCLING',
+                    'cullingType': 'CULLED',
+                    'rules': [],
+                    'rulesId': ''
                 }
-                event_dict['eventSubgroups'].append(subgroup)
-            
-            events_list.append(event_dict)
-            
-        logger.info(f"Events search: returning {len(events_list)} events")
-        
-        return jsonify(events_list), 200
+                
+                # Add categories
+                for cat in event.categories:
+                    subgroup = {
+                        'id': cat['id'],
+                        'label': cat['label'],
+                        'name': cat['name'],
+                        'description': cat['description'],
+                        'subgroupLabel': cat['label_num'],
+                        'registeredCount': cat['registered_count']
+                    }
+                    event_dict['eventSubgroups'].append(subgroup)
+                
+                events_list.append(event_dict)
+                
+            logger.info(f"Events search: returning {len(events_list)} events")
+            return jsonify(events_list), 200
+        else:
+            # Return protobuf format (default)
+            events = scheduled_events_to_protobuf()
+            logger.info(f"Events search: returning {len(events.events)} events (protobuf)")
+            return events.SerializeToString(), 200
         
     except Exception as e:
         logger.error(f"Error in events search: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return jsonify([]), 200
 
 @app.route('/api/events/<int:event_id>/register', methods=['POST'])
@@ -5654,4 +5715,3 @@ def run_standalone(passed_online, passed_global_relay, passed_global_pace_partne
 
 if __name__ == "__main__":
     run_standalone({}, {}, None)
-    
