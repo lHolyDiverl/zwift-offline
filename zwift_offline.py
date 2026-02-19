@@ -5724,6 +5724,5 @@ def run_standalone(passed_online, passed_global_relay, passed_global_pace_partne
 
 #    app.run(ssl_context=('%s/cert-zwift-com.pem' % SSL_DIR, '%s/key-zwift-com.pem' % SSL_DIR), port=443, threaded=True, host=SERVER_HOST) # debug=True, use_reload=False)
 
-
 if __name__ == "__main__":
     run_standalone({}, {}, None)
