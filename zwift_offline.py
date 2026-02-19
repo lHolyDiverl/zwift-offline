@@ -561,7 +561,7 @@ class ActiveEventInstance:
         
         # Update event status in database
         try:
-            with app.app_context():  # ← ADD THIS LINE
+            with app.app_context(): 
                 db_event = ScheduledEventDB.query.filter_by(event_id=event_id).first()
                 if db_event:
                     db_event.status = 'ACTIVE'
@@ -3809,6 +3809,13 @@ def api_private_event_feed():
                 'rubberbanding': False,
                 'eventType': 1 if event.event_type == 'RACE' else 2,
                 'eventSubgroups': [],
+                'eventSubgroupId': event.event_id,  
+                'updateDate': event.scheduled_start,
+                'organizerImageUrl': None,  
+                'organizerFirstName': '',
+                'organizerLastName': '',
+                'acceptedFolloweeCount': 0,
+                'acceptedTotalCount': 0,
                 'visible': True,
                 'unlisted': False,
                 'mapId': event.world_id,
@@ -3840,6 +3847,9 @@ def api_private_event_feed():
             
             ret.append(pe_formatted)
             logger.info(f"DEBUG: Added event {event_id} to feed")
+            logger.info(f"DEBUG: Event has {len(event.categories)} categories")
+            logger.info(f"DEBUG: Event has {len(pe_formatted['eventSubgroups'])} subgroups in feed")
+            logger.info(f"DEBUG: Categories: {event.categories}")
             
     except Exception as e:
         logger.error(f"ERROR adding scheduled events to feed: {e}")
@@ -5644,3 +5654,4 @@ def run_standalone(passed_online, passed_global_relay, passed_global_pace_partne
 
 if __name__ == "__main__":
     run_standalone({}, {}, None)
+    
