@@ -2397,7 +2397,6 @@ def scheduled_events_to_protobuf():
             event_cat.jerseyHash = 0
             event_cat.name = cat['name']
             event_cat.description = cat['description']
-            event_cat.registrationCount = cat['registered_count']
     
     return events
 
