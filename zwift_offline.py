@@ -2348,7 +2348,7 @@ def api_events_id(event_id):
 def scheduled_events_to_protobuf():
     """Convert scheduled events to protobuf format for events search."""
     events = events_pb2.Events()
-    current_time = time.time() * 1000
+    current_time = int(time.time() * 1000)  # Convert to int immediately
     
     for event_id, event in scheduled_events.items():
         state = event.get_state()
@@ -2379,13 +2379,15 @@ def scheduled_events_to_protobuf():
         
         # Add categories as subgroups
         eventStartWT = world_time()
+        time_offset = int(event.scheduled_start - current_time)  # Convert to int
+        
         for cat in event.categories:
             event_cat = pb_event.category.add()
             event_cat.id = cat['id']
             event_cat.registrationEnd = event.scheduled_start
-            event_cat.registrationEndWT = eventStartWT + (event.scheduled_start - current_time)
+            event_cat.registrationEndWT = eventStartWT + time_offset  # Both are now ints
             event_cat.eventSubgroupStart = event.scheduled_start - 2 * 60000  # fixes HUD timer
-            event_cat.eventSubgroupStartWT = eventStartWT + (event.scheduled_start - current_time) - 2 * 60000
+            event_cat.eventSubgroupStartWT = eventStartWT + time_offset - 2 * 60000
             event_cat.route_id = event.route_id
             event_cat.startLocation = cat['label_num']
             event_cat.label = cat['label_num']
