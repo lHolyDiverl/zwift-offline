@@ -344,10 +344,11 @@ class ActiveEventInstance:
             }
         }
         
-        # Set player's groupId for visual isolation
+        # Set player's groupId and eventSubgroupId for event context
         if player_id in online:
             online[player_id].groupId = self.event_subgroup_id
-            logger.debug(f"Set player {player_id} groupId to {self.event_subgroup_id}")
+            online[player_id].eventSubgroupId = self.event_subgroup_id
+            logger.debug(f"Set player {player_id} groupId and eventSubgroupId to {self.event_subgroup_id}")
     
     def remove_participant(self, player_id):
         """
@@ -366,6 +367,13 @@ class ActiveEventInstance:
         """Begin 10-second countdown to race start."""
         self.state = 'COUNTDOWN'
         self.countdown_start_time = time.time()
+        
+        # Set event context for all online participants (for event pen UI)
+        for player_id in self.participants:
+            if player_id in online:
+                online[player_id].groupId = self.event_subgroup_id
+                online[player_id].eventSubgroupId = self.event_subgroup_id
+                logger.debug(f"Set event context for player {player_id} at countdown start")
         
         logger.info(f"Starting countdown for event {self.event_subgroup_id}")
         
@@ -402,11 +410,14 @@ class ActiveEventInstance:
             
             if player_id in online:
                 state = online[player_id]
+                # Ensure event context is set
+                state.groupId = self.event_subgroup_id
+                state.eventSubgroupId = self.event_subgroup_id
                 participant['distance_at_start'] = state.distance
                 self.race_start_distance[player_id] = state.distance
                 state.time = 0  # Reset race timer
                 
-                logger.debug(f"Player {player_id} start distance: {state.distance}m")
+                logger.debug(f"Player {player_id} start distance: {state.distance}m, event context set")
         
         # Start position tracking
         self.start_position_tracking()
