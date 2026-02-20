@@ -2670,6 +2670,26 @@ def api_events_subgroups_signup_id(rel_id):
             # Update in-memory tracker
             event_registrations[player_id] = rel_id
             
+            # Update in-memory category count
+            if event_id in scheduled_events:
+                event = scheduled_events[event_id]
+                for cat in event.categories:
+                    if cat['id'] == rel_id:
+                        # If switching categories, decrement old category first
+                        if existing:
+                            old_cat_id = existing.event_subgroup_id if hasattr(existing, 'event_subgroup_id') else None
+                            if old_cat_id and old_cat_id != rel_id:
+                                for old_cat in event.categories:
+                                    if old_cat['id'] == old_cat_id:
+                                        old_cat['registered_count'] = max(0, old_cat['registered_count'] - 1)
+                                        break
+                        
+                        # Increment new category (or same category if not switching)
+                        if not existing:
+                            cat['registered_count'] += 1
+                        logger.info(f"Updated category {rel_id} registered_count to {cat['registered_count']}")
+                        break
+            
             logger.info(f"Successfully registered player {player_id} in database")
             
         except Exception as e:
@@ -2683,12 +2703,30 @@ def api_events_subgroups_signup_id(rel_id):
         pe = events_pb2.PlayerLeftEvent()
         ret = False
         
-        # Determine event_id from category ID
+        # Determine event_id and category_id from rel_id
+        # UI sometimes sends event_id instead of category_id, handle both cases
         last_digit = rel_id % 10
         if last_digit == 1:
+            # Category A
             event_id = rel_id - 1
+            category_id = rel_id
         elif last_digit == 5:
+            # Category E
             event_id = rel_id - 5
+            category_id = rel_id
+        elif last_digit == 0:
+            # UI sent event_id instead of category_id
+            # Find which category the player is registered for
+            event_id = rel_id
+            reg = EventRegistrationDB.query.filter_by(
+                player_id=player_id,
+                event_id=event_id
+            ).first()
+            if reg:
+                category_id = reg.event_subgroup_id
+            else:
+                logger.warning(f"Player {player_id} trying to unregister from event {event_id} but no registration found")
+                return jsonify({"signedUp": False}), 200  # Return success anyway
         else:
             logger.error(f"Invalid event_subgroup_id format: {rel_id}")
             return jsonify({"signedUp": False}), 400
@@ -2705,6 +2743,15 @@ def api_events_subgroups_signup_id(rel_id):
             # Remove from in-memory tracker
             if player_id in event_registrations:
                 del event_registrations[player_id]
+            
+            # Update in-memory category count
+            if event_id in scheduled_events:
+                event = scheduled_events[event_id]
+                for cat in event.categories:
+                    if cat['id'] == category_id:
+                        cat['registered_count'] = max(0, cat['registered_count'] - 1)
+                        logger.info(f"Updated category {category_id} registered_count to {cat['registered_count']}")
+                        break
             
             logger.info(f"Successfully unregistered player {player_id} from event {event_id}")
             
