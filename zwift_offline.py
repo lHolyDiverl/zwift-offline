@@ -2615,17 +2615,108 @@ def create_event_wat(rel_id, wa_type, pe, dest_ids):
 @jwt_to_session_cookie
 @login_required
 def api_events_subgroups_signup_id(rel_id):
+    """
+    Register or unregister for an event category.
+    
+    Args:
+        rel_id: The event_subgroup_id (category ID)
+            - Category A: event_id + 1 (ends in 1)
+            - Category E: event_id + 5 (ends in 5)
+    """
+    player_id = current_user.player_id
+    
     if request.method == 'POST':
+        # SIGN UP
         wa_type = udp_node_msgs_pb2.WA_TYPE.WAT_JOIN_E
         pe = events_pb2.PlayerJoinedEvent()
         ret = True
+        
+        # Determine event_id from category ID
+        # Category A = event_id + 1, Category E = event_id + 5
+        last_digit = rel_id % 10
+        if last_digit == 1:
+            event_id = rel_id - 1
+        elif last_digit == 5:
+            event_id = rel_id - 5
+        else:
+            logger.error(f"Invalid event_subgroup_id format: {rel_id}")
+            return jsonify({"signedUp": False}), 400
+        
+        # Check if already registered
+        existing = EventRegistrationDB.query.filter_by(
+            player_id=player_id,
+            event_id=event_id
+        ).first()
+        
+        if existing:
+            # Update to new category
+            existing.event_subgroup_id = rel_id
+            existing.registered_at = int(time.time() * 1000)
+            logger.info(f"Player {player_id} changed registration to category {rel_id}")
+        else:
+            # Create new registration
+            registration = EventRegistrationDB(
+                event_id=event_id,
+                event_subgroup_id=rel_id,
+                player_id=player_id,
+                registered_at=int(time.time() * 1000)
+            )
+            db.session.add(registration)
+            logger.info(f"Player {player_id} registered for event {event_id}, category {rel_id}")
+        
+        try:
+            db.session.commit()
+            
+            # Update in-memory tracker
+            event_registrations[player_id] = rel_id
+            
+            logger.info(f"Successfully registered player {player_id} in database")
+            
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"Failed to register player {player_id}: {e}")
+            return jsonify({"signedUp": False}), 500
+        
     else:
+        # UNREGISTER (DELETE)
         wa_type = udp_node_msgs_pb2.WA_TYPE.WAT_LEFT_E
         pe = events_pb2.PlayerLeftEvent()
         ret = False
-    #empty request.data
+        
+        # Determine event_id from category ID
+        last_digit = rel_id % 10
+        if last_digit == 1:
+            event_id = rel_id - 1
+        elif last_digit == 5:
+            event_id = rel_id - 5
+        else:
+            logger.error(f"Invalid event_subgroup_id format: {rel_id}")
+            return jsonify({"signedUp": False}), 400
+        
+        # Remove from database
+        EventRegistrationDB.query.filter_by(
+            player_id=player_id,
+            event_id=event_id
+        ).delete()
+        
+        try:
+            db.session.commit()
+            
+            # Remove from in-memory tracker
+            if player_id in event_registrations:
+                del event_registrations[player_id]
+            
+            logger.info(f"Successfully unregistered player {player_id} from event {event_id}")
+            
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"Failed to unregister player {player_id}: {e}")
+            return jsonify({"signedUp": ret}), 500
+    
+    # Send visual notification to all online players
     create_event_wat(rel_id, wa_type, pe, online.keys())
-    return jsonify({"signedUp":ret})
+    
+    return jsonify({"signedUp": ret})
 
 @app.route('/api/events/subgroups/register/<int:ev_sg_id>', methods=['POST'])
 @jwt_to_session_cookie
