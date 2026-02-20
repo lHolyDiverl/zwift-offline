@@ -2648,6 +2648,13 @@ def api_events_subgroups_register_id(ev_sg_id):
                 profile = get_partial_profile(player_id)
                 instance.add_participant(player_id, profile)
                 logger.info(f"Added player {player_id} to active event {ev_sg_id} during lineup")
+            else:
+                # Player already a participant (pre-registered while offline)
+                # But we still need to set event context now that they're online!
+                if player_id in online:
+                    online[player_id].groupId = ev_sg_id
+                    online[player_id].eventSubgroupId = ev_sg_id
+                    logger.info(f"Set event context for pre-registered player {player_id} in event {ev_sg_id}")
             
             # Also update event registrations tracker
             event_registrations[player_id] = ev_sg_id
