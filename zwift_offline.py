@@ -2670,9 +2670,14 @@ def api_events_subgroups_signup_id(rel_id):
             # Update in-memory tracker
             event_registrations[player_id] = rel_id
             
-            # Update in-memory category count
+            # Update in-memory category count AND registered players
             if event_id in scheduled_events:
                 event = scheduled_events[event_id]
+                
+                # Update the scheduled event's registered_players dict
+                # This is what activation checks to decide if category should activate!
+                event.registered_players[player_id] = rel_id
+                
                 for cat in event.categories:
                     if cat['id'] == rel_id:
                         # If switching categories, decrement old category first
@@ -2744,9 +2749,14 @@ def api_events_subgroups_signup_id(rel_id):
             if player_id in event_registrations:
                 del event_registrations[player_id]
             
-            # Update in-memory category count
+            # Update in-memory category count AND registered players
             if event_id in scheduled_events:
                 event = scheduled_events[event_id]
+                
+                # Remove from registered_players dict
+                if player_id in event.registered_players:
+                    del event.registered_players[player_id]
+                
                 for cat in event.categories:
                     if cat['id'] == category_id:
                         cat['registered_count'] = max(0, cat['registered_count'] - 1)
