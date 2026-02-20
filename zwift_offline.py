@@ -2695,6 +2695,20 @@ def api_events_subgroups_signup_id(rel_id):
                         logger.info(f"Updated category {rel_id} registered_count to {cat['registered_count']}")
                         break
             
+            # CRITICAL: If event is already active (in LINEUP/COUNTDOWN), add to ActiveEventInstance
+            if rel_id in active_event_instances:
+                instance = active_event_instances[rel_id]
+                if player_id not in instance.participants:
+                    profile = get_partial_profile(player_id)
+                    instance.add_participant(player_id, profile)
+                    logger.info(f"Auto-added player {player_id} to active event instance {rel_id} during registration")
+                
+                # Set event context if player is online
+                if player_id in online:
+                    online[player_id].groupId = rel_id
+                    online[player_id].eventSubgroupId = rel_id
+                    logger.info(f"Set event context for player {player_id} in active event {rel_id}")
+            
             logger.info(f"Successfully registered player {player_id} in database")
             
         except Exception as e:
@@ -2748,6 +2762,19 @@ def api_events_subgroups_signup_id(rel_id):
             # Remove from in-memory tracker
             if player_id in event_registrations:
                 del event_registrations[player_id]
+            
+            # CRITICAL: Remove from ActiveEventInstance if event is already active
+            if category_id in active_event_instances:
+                instance = active_event_instances[category_id]
+                if player_id in instance.participants:
+                    del instance.participants[player_id]
+                    logger.info(f"Removed player {player_id} from active event instance {category_id}")
+            
+            # Clear player's event context if they're online
+            if player_id in online:
+                online[player_id].groupId = 0
+                online[player_id].eventSubgroupId = 0
+                logger.info(f"Cleared event context for player {player_id}")
             
             # Update in-memory category count AND registered players
             if event_id in scheduled_events:
